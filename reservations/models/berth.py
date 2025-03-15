@@ -3,18 +3,27 @@ from ..utils.model_utils import BerthType
 
 
 class Berth(models.Model):
-    berth_number = models.IntegerField(unique=True)
     berth_type = models.CharField(max_length=15, choices=BerthType.choices)
     is_occupied = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"Berth {self.berth_number} - {self.berth_type} ({'Occupied' if self.is_occupied else 'Available'})"
-    
-    @classmethod
-    def get_available_berth(cls):
-        return cls.objects.filter(is_occupied=False).first()
+        return f"Berth {self.berth_type} ({'Occupied' if self.is_occupied else 'Available'})"
 
     @classmethod
-    def get_rac_berth(cls):
-        """Fetches an available side-lower berth for RAC passengers."""
-        return cls.objects.filter(berth_type='Side-Lower', is_occupied=False).first()
+    def assign_berth(cls, berth_type="ANY"):
+        # Priority order for confirmed tickets (avoid SL, SU initially)
+        priority_order = ["LOWER", "MIDDLE", "UPPER", "SIDE_LOWER", "SIDE_UPPER"]
+
+        if berth_type == "ANY":
+            for btype in priority_order:
+                berth = cls.objects.filter(berth_type=btype, is_occupied=False).first()
+                if berth:
+                    berth.is_occupied = True
+                    berth.save(update_fields=["is_occupied"])
+                    return berth
+        else:
+            berth = cls.objects.filter(berth_type=berth_type, is_occupied=False).first()
+            if berth:
+                berth.is_occupied = True
+                berth.save(update_fields=["is_occupied"])
+                return berth

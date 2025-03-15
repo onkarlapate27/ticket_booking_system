@@ -13,85 +13,97 @@ class Ticket(models.Model):
     def __str__(self):
         return f"{self.passenger.name} - {self.status} ({self.berth.berth_type if self.berth else 'No Berth'})"
 
-    
+
     @classmethod
     def book_ticket(cls, passenger):
-        """
-        Tries to book a ticket based on availability (Confirmed → RAC → Waitlist).
-        Ensures constraints: 63 Confirmed, 18 RAC, 10 Waitlist.
-        """
-
-        with transaction.atomic():
-            confirmed_count = cls.objects.filter(status="CONFIRMED").count()
-            rac_count = cls.objects.filter(status="RAC").count()
-            waitlist_count = cls.objects.filter(status="WAITLIST").count()
-
-            # Assign CONFIRMED berth if available (Max 63)
-            if confirmed_count < 63:
-                confirmed_berth = Berth.get_available_berth()
-                if confirmed_berth:
-                    return cls.assign_berth(confirmed_berth, passenger, status="CONFIRMED")
-
-            # Assign RAC berth if available (Max 18 passengers, 9 RAC berths)
-            if rac_count < 18:
-                rac_berth = Berth.get_rac_berth()
-                if rac_berth:
-                    return cls.assign_berth(rac_berth, passenger, status="RAC")
-
-            # Assign WAITLIST if available (Max 10)
-            if waitlist_count < 10:
-                return cls.objects.create(passenger=passenger, status="WAITLIST")
-
+        confirmed_count = cls.objects.filter(status="CONFIRMED").count()
+        rac_count = cls.objects.filter(status="RAC").count()
+        waitlist_count = cls.objects.filter(status="WAITLIST").count()
+        
+        if waitlist_count >= 10:
             return "No tickets available"
-
-    @classmethod
-    def assign_berth(cls, berth, passenger, status):
-        """
-        Assigns a berth to a passenger and marks it as occupied.
-        """
-        ticket = cls.objects.create(passenger=passenger, berth=berth, status=status)
-        berth.is_occupied = True
-        berth.save()
-        return ticket
-    
+        
+        berth = None
+        
+        if passenger.age < 5:
+            # Child under 5 doesn't get a berth, but ticket is still confirmed if available
+            if confirmed_count < 63:
+                return cls.objects.create(passenger=passenger, status="CONFIRMED")
+            elif rac_count < 18:
+                return cls.objects.create(passenger=passenger, status="RAC")
+            else:
+                return cls.objects.create(passenger=passenger, status="WAITLIST")
+        
+        # Priority for lower berth
+        if confirmed_count < 63:
+            if passenger.age > 60 or (passenger.gender == "F" and passenger.has_child):
+                berth = Berth.assign_berth("LOWER")
+                if not berth:
+                    berth = Berth.assign_berth("ANY")
+            else:
+                berth = Berth.assign_berth("ANY")
+            
+            return cls.objects.create(passenger=passenger, status="CONFIRMED", berth=berth)
+        
+        # RAC logic (side-lower berth)
+        if rac_count < 18:
+            berth = Berth.assign_berth("SIDE_LOWER")
+            return cls.objects.create(passenger=passenger, status="RAC", berth=berth)
+        
+        # Waitlist allocation
+        if waitlist_count < 10:
+            return cls.objects.create(passenger=passenger, status="WAITLIST")
+        
+        return "No tickets available"
+            
 
     @classmethod
     def cancel_ticket(cls, ticket_id):
-        """
-        Cancels a ticket and upgrades the next RAC and WAITLIST passengers accordingly.
-        """
-        with transaction.atomic():
-            ticket = cls.objects.select_for_update().filter(id=ticket_id).first()
-            if not ticket:
-                return "Ticket not found"
+        try:
+            ticket = cls.objects.get(id=ticket_id)
+            with transaction.atomic():
+                # Free up the berth if ticket had one
+                if ticket.berth:
+                    ticket.berth.is_occupied = False
+                    ticket.berth.save(update_fields=["is_occupied"])
 
-            # Free the berth
-            if ticket.berth:
-                ticket.berth.is_occupied = False
-                ticket.berth.save()
+                status = ticket.status
+                ticket.delete()
 
-            ticket.delete()
+                if status == "CONFIRMED":
+                    # Upgrade RAC → Confirmed
+                    rac_ticket = cls.objects.filter(status="RAC").first()
+                    if rac_ticket:
+                        # vacate previous RAC berth
+                        rac_berth = rac_ticket.berth
+                        if rac_berth:
+                            rac_berth.is_occupied = False
+                            rac_berth.save(update_fields=["is_occupied"])
+                        
+                        # assign confirmed to RAC
+                        berth = Berth.assign_berth("ANY")  # Assign any available berth
+                        rac_ticket.status = "CONFIRMED"
+                        rac_ticket.berth = berth
+                        rac_ticket.save(update_fields=["status", "berth"])
 
-            # Try to upgrade an RAC passenger to CONFIRMED and then WAITLIST passenger to RAC
-            rac_ticket = cls.objects.filter(status="RAC").order_by("id").first()
-            if rac_ticket:
-                confirmed_berth = Berth.get_available_berth()
-                if confirmed_berth:
-                    rac_ticket.status = "CONFIRMED"
-                    rac_ticket.berth = confirmed_berth
-                    confirmed_berth.is_occupied = True
-                    rac_ticket.save()
-                    confirmed_berth.save()
+                        # Upgrade Waitlist → RAC
+                        waitlist_ticket = cls.objects.filter(status="WAITLIST").first()
+                        if waitlist_ticket:
+                            rac_berth = Berth.assign_berth("SIDE_LOWER")  # Assign RAC berth
+                            waitlist_ticket.status = "RAC"
+                            waitlist_ticket.berth = rac_berth
+                            waitlist_ticket.save(update_fields=["status", "berth"])
 
-                waitlist_ticket = cls.objects.filter(status="WAITLIST").order_by("id").first()
-                if waitlist_ticket:
-                    rac_berth = Berth.get_rac_berth()
-                    if rac_berth:
+                elif status == "RAC":
+                    # Upgrade Waitlist → RAC
+                    waitlist_ticket = cls.objects.filter(status="WAITLIST").first()
+                    if waitlist_ticket:
+                        rac_berth = Berth.assign_berth("SIDE_LOWER")  # Assign freed RAC berth
                         waitlist_ticket.status = "RAC"
                         waitlist_ticket.berth = rac_berth
-                        rac_berth.is_occupied = True
-                        waitlist_ticket.save()
-                        rac_berth.save()
+                        waitlist_ticket.save(update_fields=["status", "berth"])
 
-            return "Ticket canceled successfully"
+            return "Ticket cancelled successfully"
+        except cls.DoesNotExist:
+            return "Ticket not found"
 
