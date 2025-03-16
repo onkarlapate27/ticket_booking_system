@@ -82,12 +82,15 @@ python manage.py test
 Make sure you're in the project root directory where the `Dockerfile` is located.
 
 ```bash
-# Build the Docker image
 docker build -t railway-reservation .
 ```
 
 ## Build and run using Docker Compose
+```bash
 docker-compose up --build
+```
 
 ## Stop containers
+```bash
 docker-compose down
+```
