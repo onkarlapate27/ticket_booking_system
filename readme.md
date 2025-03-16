@@ -11,7 +11,6 @@ A fully functional Railway Ticket Reservation API built using Django. This syste
 - Auto-upgrade mechanism on ticket cancellation.
 - Child (under 5) passenger handling (no berth assignment).
 - Rate limiting to prevent abuse (5 requests/min per user).
-- Full test suite with edge case coverage.
 
 ---
 
@@ -69,3 +68,26 @@ python manage.py runserver
 ```bash
 python manage.py test
 ```
+
+## Docker Setup
+
+### Prerequisites
+
+- Docker installed and running on your machine.
+
+---
+
+### Build Docker Image
+
+Make sure you're in the project root directory where the `Dockerfile` is located.
+
+```bash
+# Build the Docker image
+docker build -t railway-reservation .
+```
+
+## Build and run using Docker Compose
+docker-compose up --build
+
+## Stop containers
+docker-compose down
